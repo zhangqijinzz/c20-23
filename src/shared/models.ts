@@ -12,12 +12,22 @@ export interface DeskItem {
   rotation: number
 }
 
+export type FinalizeAction = 'finalized' | 'unfinalized'
+
+export interface FinalizeRecord {
+  id: string
+  action: FinalizeAction
+  at: string
+}
+
 export interface WorkspacePlan {
   id: string
   name: string
   deskWidthMm: number
   deskHeightMm: number
   items: DeskItem[]
+  finalizedAt: string | null
+  finalizeHistory: FinalizeRecord[]
   updatedAt: string
 }
 
@@ -102,7 +112,28 @@ export function createPlan(name = '我的工作台', withDemo = true): Workspace
     deskWidthMm: DEFAULT_DESK.widthMm,
     deskHeightMm: DEFAULT_DESK.heightMm,
     items,
+    finalizedAt: null,
+    finalizeHistory: [],
     updatedAt: new Date().toISOString(),
+  }
+}
+
+export function isPlanFinalized(plan: WorkspacePlan): boolean {
+  return plan.finalizedAt !== null
+}
+
+export function normalizePlan(plan: WorkspacePlan): WorkspacePlan {
+  const finalizeHistory = Array.isArray(plan.finalizeHistory)
+    ? plan.finalizeHistory.filter((record): record is FinalizeRecord =>
+        Boolean(record)
+        && typeof record.id === 'string'
+        && typeof record.at === 'string'
+        && (record.action === 'finalized' || record.action === 'unfinalized'))
+    : []
+  return {
+    ...plan,
+    finalizedAt: typeof plan.finalizedAt === 'string' ? plan.finalizedAt : null,
+    finalizeHistory,
   }
 }
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import { Move, RotateCw } from 'lucide-react'
+import { Lock, Move, RotateCw } from 'lucide-react'
 import type { DeskItem, LayoutAnalysis, WorkspacePlan } from '../../../shared/models'
-import { getDeviceDefinition } from '../../../shared/models'
+import { getDeviceDefinition, isPlanFinalized } from '../../../shared/models'
 import { getItemBounds } from '../../../shared/layoutRules'
 
 interface CanvasStageProps {
@@ -10,13 +10,15 @@ interface CanvasStageProps {
   analysis: LayoutAnalysis
   onSelect: (id: string | null) => void
   onMove: (id: string, x: number, y: number) => void
+  onLockedAttempt?: (action: string) => void
 }
 
 interface DragState { id: string; offsetX: number; offsetY: number }
 
-export function CanvasStage({ plan, selectedItemId, analysis, onSelect, onMove }: CanvasStageProps) {
+export function CanvasStage({ plan, selectedItemId, analysis, onSelect, onMove, onLockedAttempt }: CanvasStageProps) {
   const stageRef = useRef<SVGSVGElement>(null)
   const [drag, setDrag] = useState<DragState | null>(null)
+  const locked = isPlanFinalized(plan)
   const scaleToMm = useCallback((clientX: number, clientY: number) => {
     const rect = stageRef.current?.getBoundingClientRect()
     if (!rect) return null
@@ -38,16 +40,20 @@ export function CanvasStage({ plan, selectedItemId, analysis, onSelect, onMove }
 
   const startDrag = (event: ReactPointerEvent<SVGGElement>, item: DeskItem) => {
     event.stopPropagation()
+    onSelect(item.id)
+    if (locked) {
+      onLockedAttempt?.('拖动设备')
+      return
+    }
     const point = scaleToMm(event.clientX, event.clientY)
     if (!point) return
-    onSelect(item.id)
     setDrag({ id: item.id, offsetX: point.x - item.x, offsetY: point.y - item.y })
   }
 
   return (
     <div className="canvas-wrap">
-      <div className="canvas-toolbar"><span><Move size={14} /> 拖动设备调整位置</span><span><RotateCw size={14} /> 旋转请在右侧操作</span></div>
-      <svg ref={stageRef} className="desk-canvas" viewBox={`0 0 ${plan.deskWidthMm} ${plan.deskHeightMm}`} role="img" aria-label={`桌面布局画布，${plan.deskWidthMm}乘${plan.deskHeightMm}毫米`} onPointerDown={() => onSelect(null)}>
+      <div className="canvas-toolbar">{locked ? <><span><Lock size={14} /> 方案已定稿，拖动与调整已锁定</span><span>解除定稿后可继续编辑</span></> : <><span><Move size={14} /> 拖动设备调整位置</span><span><RotateCw size={14} /> 旋转请在右侧操作</span></>}</div>
+      <svg ref={stageRef} className={`desk-canvas ${locked ? 'is-locked' : ''}`} viewBox={`0 0 ${plan.deskWidthMm} ${plan.deskHeightMm}`} role="img" aria-label={`桌面布局画布，${plan.deskWidthMm}乘${plan.deskHeightMm}毫米`} onPointerDown={() => onSelect(null)}>
         <defs>
           <pattern id="desk-grid" width="50" height="50" patternUnits="userSpaceOnUse"><path d="M 50 0 L 0 0 0 50" fill="none" stroke="#d8e1ed" strokeWidth="1" /></pattern>
           <filter id="item-shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="8" floodColor="#20304a" floodOpacity=".12" /></filter>

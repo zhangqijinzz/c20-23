@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  createId,
   createInitialDocument,
   createPlan,
+  isPlanFinalized,
   type DeskItem,
   type DeviceType,
   type LayoutAnalysis,
@@ -10,6 +10,7 @@ import {
   type WorkspacePlan,
   type WorkspaceStatus,
 } from '../../shared/models'
+import { LOCKED_EDIT_FEEDBACK, createEditablePlanCopy, markPlanFinalized, markPlanUnfinalized } from '../../shared/finalizeRules'
 import { clampDeskSize, clampItemDimension } from '../../shared/layoutRules'
 import { moveCanvasItem, rotateCanvasItem } from '../canvas/canvasViewModel'
 import { createMaterialDraft } from '../materials/materialsViewModel'
@@ -26,6 +27,7 @@ export interface WorkspaceViewModel {
   issueCount: number
   feedback: string
   isPreviewOpen: boolean
+  isFinalized: boolean
   selectItem: (id: string | null) => void
   addItem: (type: DeviceType) => void
   removeItem: (id: string) => void
@@ -33,6 +35,9 @@ export interface WorkspaceViewModel {
   rotateItem: (id: string, delta: number) => void
   updateItem: (id: string, patch: Partial<Pick<DeskItem, 'widthMm' | 'heightMm' | 'x' | 'y'>>) => void
   updateDesk: (field: 'deskWidthMm' | 'deskHeightMm', value: number) => void
+  finalizePlan: () => void
+  unfinalizePlan: () => void
+  notifyLockedEdit: (action: string) => void
   createNewPlan: () => void
   duplicatePlan: () => void
   selectPlan: (id: string) => void
@@ -75,6 +80,7 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
   const selectedItem = activePlan?.items.find((item) => item.id === selectedItemId) ?? null
   const inspection = useMemo(() => activePlan ? inspectPlan(activePlan) : emptyInspection, [activePlan])
   const { analysis, issueIds, issueCount } = inspection
+  const isFinalized = activePlan ? isPlanFinalized(activePlan) : false
 
   const persist = useCallback(async (nextDocument: WorkspaceDocument, message: string) => {
     setDocument(nextDocument)
@@ -89,25 +95,35 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
     }
   }, [])
 
-  const updateActivePlan = useCallback((updater: (plan: WorkspacePlan) => WorkspacePlan, message: string) => {
+  const commitActivePlan = useCallback((updater: (plan: WorkspacePlan) => WorkspacePlan, message: string) => {
     if (!document || !activePlan) return
     const nextPlan = { ...updater(activePlan), updatedAt: new Date().toISOString() }
     const nextDocument = { ...document, plans: document.plans.map((plan) => plan.id === nextPlan.id ? nextPlan : plan) }
     void persist(nextDocument, message)
   }, [activePlan, document, persist])
 
+  const updateActivePlan = useCallback((updater: (plan: WorkspacePlan) => WorkspacePlan, message: string): boolean => {
+    if (!document || !activePlan) return false
+    if (isPlanFinalized(activePlan)) {
+      setFeedback(LOCKED_EDIT_FEEDBACK)
+      return false
+    }
+    commitActivePlan(updater, message)
+    return true
+  }, [activePlan, commitActivePlan, document])
+
   const selectItem = useCallback((id: string | null) => setSelectedItemId(id), [])
 
   const addItem = useCallback((type: DeviceType) => {
     if (!activePlan) return
     const draft = createMaterialDraft(type, activePlan.items.length)
-    updateActivePlan((plan) => ({ ...plan, items: [...plan.items, draft.item] }), draft.feedback)
-    setSelectedItemId(draft.item.id)
+    const changed = updateActivePlan((plan) => ({ ...plan, items: [...plan.items, draft.item] }), draft.feedback)
+    if (changed) setSelectedItemId(draft.item.id)
   }, [activePlan, updateActivePlan])
 
   const removeItem = useCallback((id: string) => {
-    updateActivePlan((plan) => ({ ...plan, items: plan.items.filter((item) => item.id !== id) }), '设备已移除')
-    setSelectedItemId((current) => current === id ? null : current)
+    const changed = updateActivePlan((plan) => ({ ...plan, items: plan.items.filter((item) => item.id !== id) }), '设备已移除')
+    if (changed) setSelectedItemId((current) => current === id ? null : current)
   }, [updateActivePlan])
 
   const moveItem = useCallback((id: string, x: number, y: number) => {
@@ -135,6 +151,20 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
     updateActivePlan((plan) => ({ ...plan, [field]: clampDeskSize(value, plan[field]) }), '桌面尺寸已更新')
   }, [activePlan, updateActivePlan])
 
+  const finalizePlan = useCallback(() => {
+    if (!activePlan || isPlanFinalized(activePlan)) return
+    commitActivePlan((plan) => markPlanFinalized(plan, new Date().toISOString()), '方案已定稿，布局已锁定')
+  }, [activePlan, commitActivePlan])
+
+  const unfinalizePlan = useCallback(() => {
+    if (!activePlan || !isPlanFinalized(activePlan)) return
+    commitActivePlan((plan) => markPlanUnfinalized(plan, new Date().toISOString()), '已解除定稿，可以继续编辑')
+  }, [activePlan, commitActivePlan])
+
+  const notifyLockedEdit = useCallback((action: string) => {
+    setFeedback(`方案已定稿，${action}已锁定；解除定稿后才能继续编辑`)
+  }, [])
+
   const createNewPlan = useCallback(() => {
     if (!document) return
     const plan = createPlan(`工作台 ${document.plans.length + 1}`, false)
@@ -144,14 +174,8 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
 
   const duplicatePlan = useCallback(() => {
     if (!document || !activePlan) return
-    const copy: WorkspacePlan = {
-      ...activePlan,
-      id: createId('plan'),
-      name: `${activePlan.name} · 副本`,
-      items: activePlan.items.map((item) => ({ ...item, id: createId('item') })),
-      updatedAt: new Date().toISOString(),
-    }
-    void persist({ ...document, plans: [...document.plans, copy], activePlanId: copy.id }, '方案已复制')
+    const copy = createEditablePlanCopy(activePlan)
+    void persist({ ...document, plans: [...document.plans, copy], activePlanId: copy.id }, '方案已复制，副本为可编辑状态')
     setSelectedItemId(null)
   }, [activePlan, document, persist])
 
@@ -184,6 +208,7 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
     issueCount,
     feedback,
     isPreviewOpen,
+    isFinalized,
     selectItem,
     addItem,
     removeItem,
@@ -191,6 +216,9 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
     rotateItem,
     updateItem,
     updateDesk,
+    finalizePlan,
+    unfinalizePlan,
+    notifyLockedEdit,
     createNewPlan,
     duplicatePlan,
     selectPlan,

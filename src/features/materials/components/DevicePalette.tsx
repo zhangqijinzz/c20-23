@@ -4,11 +4,12 @@ import type { DeviceDefinition, DeviceType } from '../../../shared/models'
 interface DevicePaletteProps {
   devices: DeviceDefinition[]
   onAdd: (type: DeviceType) => void
+  locked?: boolean
 }
 
 const icons = { monitor: Monitor, keyboard: Keyboard, lamp: LampDesk, speaker: Speaker, stand: TabletSmartphone }
 
-export function DevicePalette({ devices, onAdd }: DevicePaletteProps) {
+export function DevicePalette({ devices, onAdd, locked = false }: DevicePaletteProps) {
   return (
     <section className="module-panel palette-panel" aria-labelledby="palette-title">
       <div className="module-heading">
@@ -23,7 +24,7 @@ export function DevicePalette({ devices, onAdd }: DevicePaletteProps) {
         {devices.map((device) => {
           const Icon = icons[device.type]
           return (
-            <button className="device-card" key={device.type} onClick={() => onAdd(device.type)} type="button">
+            <button className="device-card" key={device.type} onClick={() => onAdd(device.type)} disabled={locked} type="button">
               <span className="device-icon" style={{ backgroundColor: device.color }}><Icon size={20} strokeWidth={1.8} /></span>
               <span className="device-copy"><strong>{device.label}</strong><small>{device.hint}</small></span>
               <span className="add-mark">+</span>
@@ -31,7 +32,7 @@ export function DevicePalette({ devices, onAdd }: DevicePaletteProps) {
           )
         })}
       </div>
-      <div className="palette-tip"><span>⌘</span><span>可先放置，再用尺寸检查微调</span></div>
+      <div className="palette-tip"><span>⌘</span><span>{locked ? '方案已定稿，添加设备已锁定' : '可先放置，再用尺寸检查微调'}</span></div>
     </section>
   )
 }
