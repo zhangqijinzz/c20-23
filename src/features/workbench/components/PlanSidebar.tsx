@@ -1,4 +1,4 @@
-import { Copy, LayoutGrid, Plus, Trash2 } from 'lucide-react'
+import { Copy, LayoutGrid, Lock, Plus, Trash2 } from 'lucide-react'
 import type { WorkspacePlan } from '../../../shared/models'
 
 interface PlanSidebarProps {
@@ -20,7 +20,9 @@ export function PlanSidebar({ plans, activePlanId, onSelect, onCreate, onDuplica
           <button className={`plan-card ${plan.id === activePlanId ? 'is-active' : ''}`} key={plan.id} onClick={() => onSelect(plan.id)} type="button">
             <span className="plan-number">0{index + 1}</span>
             <span className="plan-card-copy"><strong>{plan.name}</strong><small>{plan.items.length} 件设备 · {plan.deskWidthMm} × {plan.deskHeightMm} mm</small></span>
-            {plan.id === activePlanId && <span className="active-dot" />}
+            {plan.finalized
+              ? <span className="finalized-badge" title={`已定稿 · ${plan.finalizedAt ? new Date(plan.finalizedAt).toLocaleString() : ''}`}><Lock size={10} /> 定稿</span>
+              : plan.id === activePlanId ? <span className="active-dot" /> : null}
           </button>
         ))}
       </div>

@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  createId,
   createInitialDocument,
   createPlan,
+  duplicatePlanAsDraft,
   type DeskItem,
   type DeviceType,
   type LayoutAnalysis,
@@ -14,7 +14,16 @@ import { clampDeskSize, clampItemDimension } from '../../shared/layoutRules'
 import { moveCanvasItem, rotateCanvasItem } from '../canvas/canvasViewModel'
 import { createMaterialDraft } from '../materials/materialsViewModel'
 import { inspectPlan } from '../inspection/inspectionViewModel'
+import {
+  blockedLayoutMessage,
+  isPlanFinalized,
+  markPlanFinalized,
+  unmarkPlanFinalized,
+  type LayoutOperation,
+} from '../finalization/finalizeViewModel'
 import { LocalWorkspaceRepository, type WorkspaceRepository } from './workspaceRepository'
+
+export type FeedbackTone = 'info' | 'warning'
 
 export interface WorkspaceViewModel {
   status: WorkspaceStatus
@@ -25,7 +34,9 @@ export interface WorkspaceViewModel {
   issueIds: string[]
   issueCount: number
   feedback: string
+  feedbackTone: FeedbackTone
   isPreviewOpen: boolean
+  isFinalized: boolean
   selectItem: (id: string | null) => void
   addItem: (type: DeviceType) => void
   removeItem: (id: string) => void
@@ -33,6 +44,9 @@ export interface WorkspaceViewModel {
   rotateItem: (id: string, delta: number) => void
   updateItem: (id: string, patch: Partial<Pick<DeskItem, 'widthMm' | 'heightMm' | 'x' | 'y'>>) => void
   updateDesk: (field: 'deskWidthMm' | 'deskHeightMm', value: number) => void
+  markFinalized: () => void
+  unmarkFinalized: () => void
+  notifyLockedDrag: () => void
   createNewPlan: () => void
   duplicatePlan: () => void
   selectPlan: (id: string) => void
@@ -50,6 +64,7 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null)
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
   const [feedback, setFeedback] = useState('正在准备你的工作台…')
+  const [feedbackTone, setFeedbackTone] = useState<FeedbackTone>('info')
 
   useEffect(() => {
     let active = true
@@ -80,6 +95,7 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
     setDocument(nextDocument)
     setStatus('saving')
     setFeedback(message)
+    setFeedbackTone('info')
     try {
       await repositoryRef.current.save(nextDocument)
       setStatus('ready')
@@ -96,29 +112,42 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
     void persist(nextDocument, message)
   }, [activePlan, document, persist])
 
+  const blockLayout = useCallback((operation: LayoutOperation): boolean => {
+    if (!activePlan || !isPlanFinalized(activePlan)) return false
+    setFeedback(blockedLayoutMessage(operation))
+    setFeedbackTone('warning')
+    return true
+  }, [activePlan])
+
   const selectItem = useCallback((id: string | null) => setSelectedItemId(id), [])
 
   const addItem = useCallback((type: DeviceType) => {
-    if (!activePlan) return
+    if (!activePlan || blockLayout('add-item')) return
     const draft = createMaterialDraft(type, activePlan.items.length)
     updateActivePlan((plan) => ({ ...plan, items: [...plan.items, draft.item] }), draft.feedback)
     setSelectedItemId(draft.item.id)
-  }, [activePlan, updateActivePlan])
+  }, [activePlan, blockLayout, updateActivePlan])
 
   const removeItem = useCallback((id: string) => {
+    if (blockLayout('remove-item')) return
     updateActivePlan((plan) => ({ ...plan, items: plan.items.filter((item) => item.id !== id) }), '设备已移除')
     setSelectedItemId((current) => current === id ? null : current)
-  }, [updateActivePlan])
+  }, [blockLayout, updateActivePlan])
 
   const moveItem = useCallback((id: string, x: number, y: number) => {
+    if (blockLayout('move')) return
     updateActivePlan((plan) => ({ ...plan, items: moveCanvasItem(plan.items, id, x, y) }), '位置已更新')
-  }, [updateActivePlan])
+  }, [blockLayout, updateActivePlan])
 
   const rotateItem = useCallback((id: string, delta: number) => {
+    if (blockLayout('rotate')) return
     updateActivePlan((plan) => ({ ...plan, items: rotateCanvasItem(plan.items, id, delta) }), '角度已更新')
-  }, [updateActivePlan])
+  }, [blockLayout, updateActivePlan])
 
   const updateItem = useCallback((id: string, patch: Partial<Pick<DeskItem, 'widthMm' | 'heightMm' | 'x' | 'y'>>) => {
+    const touchesPosition = patch.x !== undefined || patch.y !== undefined
+    const touchesSize = patch.widthMm !== undefined || patch.heightMm !== undefined
+    if (blockLayout(touchesPosition ? 'item-coordinates' : 'item-size')) return
     updateActivePlan((plan) => ({
       ...plan,
       items: plan.items.map((item) => item.id === id ? {
@@ -128,12 +157,26 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
         heightMm: patch.heightMm === undefined ? item.heightMm : clampItemDimension(patch.heightMm, item.heightMm),
       } : item),
     }), '尺寸参数已更新')
-  }, [updateActivePlan])
+  }, [blockLayout, updateActivePlan])
 
   const updateDesk = useCallback((field: 'deskWidthMm' | 'deskHeightMm', value: number) => {
-    if (!activePlan) return
+    if (!activePlan || blockLayout('desk-size')) return
     updateActivePlan((plan) => ({ ...plan, [field]: clampDeskSize(value, plan[field]) }), '桌面尺寸已更新')
+  }, [activePlan, blockLayout, updateActivePlan])
+
+  const markFinalized = useCallback(() => {
+    if (!activePlan || isPlanFinalized(activePlan)) return
+    updateActivePlan((plan) => markPlanFinalized(plan), '方案已标记为定稿，布局已锁定')
   }, [activePlan, updateActivePlan])
+
+  const unmarkFinalized = useCallback(() => {
+    if (!activePlan || !isPlanFinalized(activePlan)) return
+    updateActivePlan((plan) => unmarkPlanFinalized(plan), '已解除定稿，可以继续调整布局')
+  }, [activePlan, updateActivePlan])
+
+  const notifyLockedDrag = useCallback(() => {
+    blockLayout('move')
+  }, [blockLayout])
 
   const createNewPlan = useCallback(() => {
     if (!document) return
@@ -144,14 +187,8 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
 
   const duplicatePlan = useCallback(() => {
     if (!document || !activePlan) return
-    const copy: WorkspacePlan = {
-      ...activePlan,
-      id: createId('plan'),
-      name: `${activePlan.name} · 副本`,
-      items: activePlan.items.map((item) => ({ ...item, id: createId('item') })),
-      updatedAt: new Date().toISOString(),
-    }
-    void persist({ ...document, plans: [...document.plans, copy], activePlanId: copy.id }, '方案已复制')
+    const copy = duplicatePlanAsDraft(activePlan)
+    void persist({ ...document, plans: [...document.plans, copy], activePlanId: copy.id }, '方案已复制，副本为可编辑的新方案')
     setSelectedItemId(null)
   }, [activePlan, document, persist])
 
@@ -183,7 +220,9 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
     issueIds,
     issueCount,
     feedback,
+    feedbackTone,
     isPreviewOpen,
+    isFinalized: activePlan ? isPlanFinalized(activePlan) : false,
     selectItem,
     addItem,
     removeItem,
@@ -191,6 +230,9 @@ export function useWorkspaceViewModel(repository?: WorkspaceRepository): Workspa
     rotateItem,
     updateItem,
     updateDesk,
+    markFinalized,
+    unmarkFinalized,
+    notifyLockedDrag,
     createNewPlan,
     duplicatePlan,
     selectPlan,

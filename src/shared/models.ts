@@ -12,6 +12,13 @@ export interface DeskItem {
   rotation: number
 }
 
+export type FinalizeAction = 'finalize' | 'unfinalize'
+
+export interface FinalizeRecord {
+  action: FinalizeAction
+  at: string
+}
+
 export interface WorkspacePlan {
   id: string
   name: string
@@ -19,6 +26,9 @@ export interface WorkspacePlan {
   deskHeightMm: number
   items: DeskItem[]
   updatedAt: string
+  finalized: boolean
+  finalizedAt: string | null
+  finalizeHistory: FinalizeRecord[]
 }
 
 export interface WorkspaceDocument {
@@ -103,6 +113,22 @@ export function createPlan(name = '我的工作台', withDemo = true): Workspace
     deskHeightMm: DEFAULT_DESK.heightMm,
     items,
     updatedAt: new Date().toISOString(),
+    finalized: false,
+    finalizedAt: null,
+    finalizeHistory: [],
+  }
+}
+
+export function duplicatePlanAsDraft(source: WorkspacePlan): WorkspacePlan {
+  return {
+    ...source,
+    id: createId('plan'),
+    name: `${source.name} · 副本`,
+    items: source.items.map((item) => ({ ...item, id: createId('item') })),
+    updatedAt: new Date().toISOString(),
+    finalized: false,
+    finalizedAt: null,
+    finalizeHistory: [],
   }
 }
 
